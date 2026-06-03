@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WNBA Matchup Bet Card</title>
+<link rel="preconnect" href="https://a.espncdn.com" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo-dot"></span>
+    <div>
+      <h1>WNBA <span>Matchup Bet Card</span></h1>
+      <div class="sub" id="ratingsMeta">loading ratings…</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <label class="ctl">
+      <span>Date</span>
+      <input type="date" id="datePicker" />
+    </label>
+    <label class="ctl">
+      <span>Bankroll&nbsp;($)</span>
+      <input type="number" id="bankroll" min="0" step="50" value="1000" />
+    </label>
+    <label class="ctl">
+      <span>Kelly</span>
+      <select id="kellyFrac">
+        <option value="0.125">1/8</option>
+        <option value="0.25" selected>1/4</option>
+        <option value="0.5">1/2</option>
+        <option value="1">Full</option>
+      </select>
+    </label>
+    <label class="ctl">
+      <span>Unit&nbsp;(%&nbsp;bank)</span>
+      <input type="number" id="unitPct" min="0.25" step="0.25" value="1" />
+    </label>
+    <label class="ctl">
+      <span>Sharp&nbsp;weight</span>
+      <input type="range" id="sharpW" min="0" max="100" step="5" value="50" />
+      <span class="rangeval" id="sharpWVal">50%</span>
+    </label>
+    <label class="ctl">
+      <span>Edge&nbsp;min&nbsp;(%)</span>
+      <input type="number" id="edgeMin" min="0" step="0.5" value="3" />
+    </label>
+    <button id="refreshBtn" class="ghost" title="Reload games for this date">↻</button>
+  </div>
+</header>
+
+<main id="slate" class="slate"><div class="empty">Pick a date to load the slate…</div></main>
+
+<footer class="foot">
+  <span id="footMeta"></span>
+  <span class="muted">Model is decision support, not advice. Bet responsibly. Lines you enter are stored locally in your browser only.</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
