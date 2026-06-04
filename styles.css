@@ -92,8 +92,15 @@ button.ghost:hover{border-color:var(--accent)}
 .entry input:focus,.entry select:focus{border-color:var(--accent)}
 .entry .colh{font-size:10px;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.4px}
 
+.entry .row.sharp input{border-color:#3a4a6e;background:#172138}
+.entry .row.sharp .rl{color:#9fb0d6}
+
 /* recommendation */
 .rec-box{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.fairline{font-size:11.5px;color:var(--muted);text-align:center;font-variant-numeric:tabular-nums}
+.fairline b{color:var(--txt)}
+.warnflag{color:var(--warn);font-weight:700}
+.metrics .b.sharpb{border-color:#3a4a6e;background:linear-gradient(180deg,rgba(91,140,255,.08),var(--bg2))}
 .verdict{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .pill{font-weight:800;font-size:13px;padding:6px 12px;border-radius:999px;letter-spacing:.3px}
 .pill.bet{background:rgba(33,208,122,.15);color:var(--good);border:1px solid var(--good)}

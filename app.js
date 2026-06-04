@@ -2,31 +2,43 @@
    WNBA Matchup Bet Card  —  client logic
    - Ratings (Four Factors / power) come from data/ratings.json (refresh.ps1)
    - Schedule, logos, colors, reference line come live from ESPN
-   - You enter the book + sharp lines; model returns fair odds, edge, Kelly stake
+   - You enter best-offer + sharp lines (both sides); the app shows your
+     MODEL edge vs the SHARP-validated (de-vigged) edge, and sizes the bet on
+     a model/sharp blend you control with the "Model trust" slider.
    ========================================================================== */
 
 const ESPN = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba/scoreboard";
-let RATINGS = null;       // parsed ratings.json
-let CFG = { homeCourt: 2.5, marginSD: 13.5 };
+let RATINGS = null;
+let CFG = { homeCourt: 2.0, marginSD: 12.6 };
 
 /* ---------------- math helpers ---------------- */
 const clamp = (x,a,b)=>Math.max(a,Math.min(b,x));
-function normCdf(z){ // Φ via erf approximation
+function normCdf(z){ // Φ
   const t = 1/(1+0.2316419*Math.abs(z));
   const d = 0.3989423*Math.exp(-z*z/2);
   let p = d*t*(0.3193815+t*(-0.3565638+t*(1.781478+t*(-1.821256+t*1.330274))));
   return z>0 ? 1-p : p;
 }
+function invNorm(p){ // Φ⁻¹ (Acklam)
+  if(p<=0) return -1e9; if(p>=1) return 1e9;
+  const a=[-3.969683028665376e1,2.209460984245205e2,-2.759285104469687e2,1.383577518672690e2,-3.066479806614716e1,2.506628277459239e0];
+  const b=[-5.447609879822406e1,1.615858368580409e2,-1.556989798598866e2,6.680131188771972e1,-1.328068155288572e1];
+  const c=[-7.784894002430293e-3,-3.223964580411365e-1,-2.400758277161838e0,-2.549732539343734e0,4.374664141464968e0,2.938163982698783e0];
+  const d=[7.784695709041462e-3,3.224671290700398e-1,2.445134137142996e0,3.754408661907416e0];
+  const pl=0.02425, ph=1-pl; let q,r;
+  if(p<pl){ q=Math.sqrt(-2*Math.log(p)); return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1); }
+  if(p<=ph){ q=p-0.5; r=q*q; return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q/(((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1); }
+  q=Math.sqrt(-2*Math.log(1-p)); return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])/((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1);
+}
 const americanToDecimal = a => a>0 ? 1+a/100 : 1+100/(-a);
 const americanToProb    = a => a>0 ? 100/(a+100) : (-a)/((-a)+100);
-function probToAmerican(p){
-  p = clamp(p, 0.0001, 0.9999);
-  return p>=0.5 ? Math.round(-100*p/(1-p)) : Math.round(100*(1-p)/p);
-}
+function probToAmerican(p){ p=clamp(p,0.0001,0.9999); return p>=0.5 ? Math.round(-100*p/(1-p)) : Math.round(100*(1-p)/p); }
 const fmtOdds = a => (a>0?`+${a}`:`${a}`);
 const fmtSpread = s => (s>0?`+${s.toFixed(1)}`:s.toFixed(1));
 const pct = x => `${(x*100).toFixed(1)}%`;
-const REST_PTS = { rested:+0.7, normal:0, b2b:-1.7, "3in4":-1.0 }; // points to team margin
+const sgn = x => (x>=0?'+':'')+x.toFixed(1);
+const sgnp = x => (x>=0?'+':'')+(x*100).toFixed(1)+'%';
+const REST_PTS = { rested:+0.7, normal:0, b2b:-1.7, "3in4":-1.0 };
 
 /* ---------------- persistence ---------------- */
 const LS = {
@@ -38,40 +50,37 @@ function loadSettings(){
   if(s.bankroll!=null) bankrollEl.value=s.bankroll;
   if(s.kelly!=null)    kellyEl.value=s.kelly;
   if(s.unit!=null)     unitEl.value=s.unit;
-  if(s.sharpW!=null)   sharpWEl.value=s.sharpW;
+  if(s.trust!=null)    trustEl.value=s.trust;
   if(s.edgeMin!=null)  edgeMinEl.value=s.edgeMin;
 }
 function saveSettings(){
   LS.set('wnba_settings',{bankroll:+bankrollEl.value,kelly:kellyEl.value,
-    unit:+unitEl.value,sharpW:+sharpWEl.value,edgeMin:+edgeMinEl.value});
+    unit:+unitEl.value,trust:+trustEl.value,edgeMin:+edgeMinEl.value});
 }
 
 /* ---------------- DOM ---------------- */
 const $=id=>document.getElementById(id);
 const slate=$('slate'), datePicker=$('datePicker'), metaEl=$('ratingsMeta'), footEl=$('footMeta');
 const bankrollEl=$('bankroll'), kellyEl=$('kellyFrac'), unitEl=$('unitPct'),
-      sharpWEl=$('sharpW'), sharpWValEl=$('sharpWVal'), edgeMinEl=$('edgeMin');
+      trustEl=$('trustW'), trustValEl=$('trustWVal'), edgeMinEl=$('edgeMin');
 
 /* ---------------- boot ---------------- */
 (async function init(){
   try{
     RATINGS = await (await fetch('data/ratings.json',{cache:'no-store'})).json();
-    CFG.homeCourt = RATINGS.homeCourt ?? 2.5;
-    CFG.marginSD  = RATINGS.marginSD ?? 13.5;
+    CFG.homeCourt = RATINGS.homeCourt ?? 2.0;
+    CFG.marginSD  = RATINGS.marginSD ?? 12.6;
     metaEl.textContent = `Ratings as of ${RATINGS.asOf} · ${RATINGS.season} season · HCA ${CFG.homeCourt} · σ ${CFG.marginSD}`;
-  }catch(e){
-    metaEl.textContent = '⚠ could not load data/ratings.json — run refresh.ps1';
-  }
+  }catch(e){ metaEl.textContent = '⚠ could not load data/ratings.json — run refresh.ps1'; }
   loadSettings();
   const url=new URL(location.href);
-  const qd=url.searchParams.get('d');
-  datePicker.value = qd || todayISO();
-  sharpWValEl.textContent = sharpWEl.value+'%';
+  datePicker.value = url.searchParams.get('d') || todayISO();
+  trustValEl.textContent = trustEl.value+'%';
 
   datePicker.addEventListener('change', ()=>{ syncUrl(); loadSlate(); });
   $('refreshBtn').addEventListener('click', loadSlate);
   [bankrollEl,kellyEl,unitEl,edgeMinEl].forEach(el=>el.addEventListener('input',()=>{saveSettings();recomputeAll();}));
-  sharpWEl.addEventListener('input',()=>{sharpWValEl.textContent=sharpWEl.value+'%';saveSettings();recomputeAll();});
+  trustEl.addEventListener('input',()=>{trustValEl.textContent=trustEl.value+'%';saveSettings();recomputeAll();});
 
   loadSlate();
 })();
@@ -99,54 +108,32 @@ async function loadSlate(){
     slate.innerHTML=`<div class="empty">Couldn't reach ESPN. Check connection.<br><small>${e.message}</small></div>`;
   }
 }
-function sameLocalDay(isoTs, dayISO){
-  const d=new Date(isoTs); d.setMinutes(d.getMinutes()-d.getTimezoneOffset());
-  return d.toISOString().slice(0,10)===dayISO;
-}
-// rest: who played in the previous 3 days -> days since last game
+function sameLocalDay(isoTs, dayISO){ const d=new Date(isoTs); d.setMinutes(d.getMinutes()-d.getTimezoneOffset()); return d.toISOString().slice(0,10)===dayISO; }
 async function buildRestMap(iso){
-  const map={};
-  const base=new Date(iso+'T12:00:00');
+  const map={}; const base=new Date(iso+'T12:00:00');
   for(let back=1;back<=3;back++){
-    const d=new Date(base); d.setDate(d.getDate()-back);
-    const ds=d.toISOString().slice(0,10);
-    try{
-      const data=await (await fetch(`${ESPN}?dates=${espnDate(ds)}&limit=100`)).json();
-      (data.events||[]).forEach(e=>{
-        if(!sameLocalDay(e.date,ds)) return;
-        e.competitions[0].competitors.forEach(c=>{
-          const ab=c.team.abbreviation;
-          if(map[ab]==null) map[ab]=back; // nearest prior game
-        });
-      });
+    const d=new Date(base); d.setDate(d.getDate()-back); const ds=d.toISOString().slice(0,10);
+    try{ const data=await (await fetch(`${ESPN}?dates=${espnDate(ds)}&limit=100`)).json();
+      (data.events||[]).forEach(e=>{ if(!sameLocalDay(e.date,ds)) return;
+        e.competitions[0].competitors.forEach(c=>{ const ab=c.team.abbreviation; if(map[ab]==null) map[ab]=back; }); });
     }catch{}
   }
   return map;
 }
-function restState(daysAgo){
-  if(daysAgo==null) return 'rested';
-  if(daysAgo<=1) return 'b2b';
-  if(daysAgo===2) return '3in4';
-  return daysAgo>=3 ? 'rested':'normal';
-}
+function restState(d){ if(d==null) return 'rested'; if(d<=1) return 'b2b'; if(d===2) return '3in4'; return 'rested'; }
 
-/* ---------------- reference line parsing ---------------- */
+/* ---------------- reference line ---------------- */
 function parseEspnLine(ev, homeAbbr){
-  try{
-    const o=ev.competitions[0].odds?.[0]; if(!o) return {};
+  try{ const o=ev.competitions[0].odds?.[0]; if(!o) return {};
     let homeSpread=null;
-    if(o.details){ // e.g. "NY -8.5"
-      const m=o.details.trim().match(/^([A-Z]{2,4})\s+(-?\d+(\.\d+)?)/);
-      if(m){ const fav=m[1], num=parseFloat(m[2]); homeSpread = (fav===homeAbbr)? num : -num; }
-    }
+    if(o.details){ const m=o.details.trim().match(/^([A-Z]{2,4})\s+(-?\d+(\.\d+)?)/); if(m){ const fav=m[1],num=parseFloat(m[2]); homeSpread=(fav===homeAbbr)?num:-num; } }
     if(homeSpread==null && typeof o.spread==='number') homeSpread=o.spread;
-    return { homeSpread, ou:o.overUnder };
+    return { homeSpread };
   }catch{ return {}; }
 }
-
-/* ---------------- card rendering ---------------- */
 function teamRec(abbr){ return RATINGS?.teams?.[abbr] || null; }
 
+/* ---------------- card rendering ---------------- */
 function renderCard(ev,iso,restMap){
   const comp=ev.competitions[0];
   const home=comp.competitors.find(c=>c.homeAway==='home');
@@ -159,14 +146,11 @@ function renderCard(ev,iso,restMap){
   const restH=restState(restMap[ha]), restA=restState(restMap[aa]);
   const tip=new Date(ev.date).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
   const status=ev.status?.type?.shortDetail||'';
-
-  const homec=(hr?.color)||home.team.color&&('#'+home.team.color)||'#26304a';
-  const awayc=(ar?.color)||away.team.color&&('#'+away.team.color)||'#26304a';
+  const homec=(hr?.color)||'#26304a', awayc=(ar?.color)||'#26304a';
   const logoH=(hr?.logo)||home.team.logo, logoA=(ar?.logo)||away.team.logo;
 
   const card=document.createElement('div');
-  card.className='card'; card.dataset.gid=gid; card.dataset.iso=iso;
-  card.dataset.home=ha; card.dataset.away=aa;
+  card.className='card'; card.dataset.gid=gid; card.dataset.iso=iso; card.dataset.home=ha; card.dataset.away=aa;
   card.style.setProperty('--homec',homec); card.style.setProperty('--awayc',awayc);
 
   const ff = hr&&ar ? `
@@ -175,8 +159,8 @@ function renderCard(ev,iso,restMap){
       ${ffRow('eFG%', ar.efg, hr.efg, true)}
       ${ffRow('TOV%', ar.tovPct, hr.tovPct, false)}
       ${ffRow('OREB%',ar.orebPct,hr.orebPct, true)}
-      ${ffRow('Pace', ar.pace/100, hr.pace/100, true, v=>(v*100).toFixed(1))}
-      ${ffRow('Net/100', (ar.netRtg+50)/100,(hr.netRtg+50)/100,true, (v,raw,which)=> (which==='a'?ar.netRtg:hr.netRtg).toFixed(1))}
+      ${ffRow('Pace', ar.pace/100, hr.pace/100, true)}
+      ${ffRaw('Net/100', ar.netRtg, hr.netRtg)}
     </div>`:'';
 
   card.innerHTML=`
@@ -184,40 +168,43 @@ function renderCard(ev,iso,restMap){
       <div class="statusbadge">${status}</div>
       <div class="team">
         <img src="${logoA||''}" alt="${aa}" onerror="this.style.visibility='hidden'"/>
-        <div class="nm">${away.team.shortDisplayName}</div>
-        <div class="pw">pwr ${ar?ar.power.toFixed(1):'–'}</div>
+        <div class="nm">${away.team.shortDisplayName}</div><div class="pw">pwr ${ar?ar.power.toFixed(1):'–'}</div>
       </div>
       <div class="vs"><span class="at">@</span><span class="time">${tip}</span></div>
       <div class="team">
         <img src="${logoH||''}" alt="${ha}" onerror="this.style.visibility='hidden'"/>
-        <div class="nm">${home.team.shortDisplayName}</div>
-        <div class="pw">pwr ${hr?hr.power.toFixed(1):'–'}</div>
+        <div class="nm">${home.team.shortDisplayName}</div><div class="pw">pwr ${hr?hr.power.toFixed(1):'–'}</div>
       </div>
     </div>
 
     <div class="modelstrip">
       <div class="m"><span class="muted">Model line</span><b data-f="modelLine">–</b></div>
-      <div class="m"><span class="muted">Proj. margin</span><b data-f="projMargin">–</b></div>
-      <div class="m"><span class="muted">Blended line</span><b data-f="blendLine">–</b></div>
+      <div class="m"><span class="muted">Proj margin</span><b data-f="projMargin">–</b></div>
+      <div class="m"><span class="muted">Sharp line</span><b data-f="sharpLine">–</b></div>
     </div>
     ${ff}
 
     <div class="entry">
       <div class="row"><span class="rl"></span><span class="colh">${aa} (away)</span><span class="colh">${ha} (home)</span></div>
       <div class="row">
-        <span class="rl">Book spr</span>
+        <span class="rl">Offer spr</span>
         <input data-i="bookAway" inputmode="decimal" placeholder="+/-" value="${saved.bookAway ?? (ref.homeSpread!=null?(-ref.homeSpread):'')}">
         <input data-i="bookHome" inputmode="decimal" placeholder="+/-" value="${saved.bookHome ?? (ref.homeSpread ?? '')}">
       </div>
       <div class="row">
-        <span class="rl">Price</span>
+        <span class="rl">Offer price</span>
         <input data-i="priceAway" inputmode="numeric" placeholder="-110" value="${saved.priceAway ?? -110}">
         <input data-i="priceHome" inputmode="numeric" placeholder="-110" value="${saved.priceHome ?? -110}">
       </div>
-      <div class="row">
+      <div class="row sharp">
         <span class="rl">Sharp spr</span>
         <input data-i="sharpAway" inputmode="decimal" placeholder="opt." value="${saved.sharpAway ?? ''}">
         <input data-i="sharpHome" inputmode="decimal" placeholder="opt." value="${saved.sharpHome ?? ''}">
+      </div>
+      <div class="row sharp">
+        <span class="rl">Sharp price</span>
+        <input data-i="sPriceAway" inputmode="numeric" placeholder="-110" value="${saved.sPriceAway ?? ''}">
+        <input data-i="sPriceHome" inputmode="numeric" placeholder="-110" value="${saved.sPriceHome ?? ''}">
       </div>
       <div class="row">
         <span class="rl">Injury ±</span>
@@ -236,134 +223,132 @@ function renderCard(ev,iso,restMap){
         <span class="sidetxt" data-f="side">—</span>
         <span class="pill pass" data-f="pill">PASS</span>
       </div>
+      <div class="fairline" data-f="note"></div>
       <div class="metrics">
-        <div class="b"><div class="k">Model fair</div><div class="vv" data-f="fair">–</div></div>
-        <div class="b"><div class="k">Win %</div><div class="vv" data-f="winp">–</div></div>
-        <div class="b"><div class="k">Edge</div><div class="vv" data-f="edge">–</div></div>
-        <div class="b"><div class="k">Spr value</div><div class="vv" data-f="spv">–</div></div>
+        <div class="b"><div class="k">Model edge</div><div class="vv" data-f="medge">–</div></div>
+        <div class="b sharpb"><div class="k">Sharp edge</div><div class="vv" data-f="sedge">–</div></div>
+        <div class="b"><div class="k">Mkt pts</div><div class="vv" data-f="mkt">–</div></div>
+        <div class="b"><div class="k">Bet win%</div><div class="vv" data-f="winp">–</div></div>
       </div>
       <div class="stake">
-        <span class="muted">Stake (¼-Kelly default)</span>
+        <span class="muted">Stake</span>
         <span><b data-f="stake">$0</b> &nbsp;·&nbsp; <span data-f="units" class="muted">0.0u</span> &nbsp;·&nbsp; EV <span data-f="ev" class="muted">0%</span></span>
       </div>
     </div>`;
 
-  // wire inputs
-  card.querySelectorAll('[data-i]').forEach(el=>{
-    el.addEventListener('input',()=>{ mirrorSpreads(card,el); persistCard(card); compute(card); });
-  });
+  card.querySelectorAll('[data-i]').forEach(el=>el.addEventListener('input',()=>{ mirrorSpreads(card,el); persistCard(card); compute(card); }));
   return card;
 }
 
-function ffRow(label, av, hv, higherGood, fmt){
-  const f = fmt || (v=>pct(v));
+function ffRow(label, av, hv, higherGood){
   const aBetter = higherGood ? av>hv : av<hv;
-  const aCls = aBetter?'pos':'', hCls = !aBetter?'pos':'';
-  const aTxt = fmt? fmt(av,av,'a') : pct(av);
-  const hTxt = fmt? fmt(hv,hv,'h') : pct(hv);
-  return `<div class="lab">${label}</div><div class="v edge ${aCls}">${aTxt}</div><div class="v edge ${hCls}">${hTxt}</div>`;
+  return `<div class="lab">${label}</div><div class="v edge ${aBetter?'pos':''}">${pct(av)}</div><div class="v edge ${!aBetter?'pos':''}">${pct(hv)}</div>`;
+}
+function ffRaw(label, av, hv){
+  const aBetter = av>hv;
+  return `<div class="lab">${label}</div><div class="v edge ${aBetter?'pos':''}">${av.toFixed(1)}</div><div class="v edge ${!aBetter?'pos':''}">${hv.toFixed(1)}</div>`;
 }
 function restSelect(key,val){
   const opts=[['rested','Rested'],['normal','Normal'],['3in4','3-in-4'],['b2b','B2B']];
   return `<select data-i="${key}">${opts.map(o=>`<option value="${o[0]}" ${o[0]===val?'selected':''}>${o[1]}</option>`).join('')}</select>`;
 }
-function mirrorSpreads(card,el){ // keep away/home spreads mirrored
-  const k=el.dataset.i, v=parseFloat(el.value);
-  if(isNaN(v)) return;
+function mirrorSpreads(card,el){
+  const k=el.dataset.i, v=parseFloat(el.value); if(isNaN(v)) return;
   const set=(name,val)=>{ const t=card.querySelector(`[data-i="${name}"]`); if(t&&document.activeElement!==t) t.value=(val>0?`+${val}`:`${val}`); };
-  if(k==='bookHome') set('bookAway',-v);
-  if(k==='bookAway') set('bookHome',-v);
-  if(k==='sharpHome') set('sharpAway',-v);
-  if(k==='sharpAway') set('sharpHome',-v);
+  if(k==='bookHome') set('bookAway',-v);  if(k==='bookAway') set('bookHome',-v);
+  if(k==='sharpHome') set('sharpAway',-v); if(k==='sharpAway') set('sharpHome',-v);
 }
-function persistCard(card){
-  const o={}; card.querySelectorAll('[data-i]').forEach(el=>o[el.dataset.i]=el.value);
-  LS.set(`wnba_odds_${card.dataset.iso}_${card.dataset.gid}`,o);
-}
+function persistCard(card){ const o={}; card.querySelectorAll('[data-i]').forEach(el=>o[el.dataset.i]=el.value); LS.set(`wnba_odds_${card.dataset.iso}_${card.dataset.gid}`,o); }
 
 /* ---------------- the model ---------------- */
 function recomputeAll(){ document.querySelectorAll('.card').forEach(compute); }
 
+// cover prob of a side given expected home margin mu.  home: win if margin > -number; away: win if margin < number
+const coverProb = (mu, number, isHome, sd) => isHome ? 1-normCdf((-number-mu)/sd) : normCdf((number-mu)/sd);
+
 function compute(card){
   const hr=teamRec(card.dataset.home), ar=teamRec(card.dataset.away);
-  const g=sel=>card.querySelector(`[data-f="${sel}"]`);
-  const inp=name=>card.querySelector(`[data-i="${name}"]`);
-  const num=name=>{ const v=parseFloat(inp(name)?.value); return isNaN(v)?null:v; };
-  if(!hr||!ar){ g('side').textContent='no rating for one team'; return; }
+  const g=s=>card.querySelector(`[data-f="${s}"]`);
+  const inp=n=>card.querySelector(`[data-i="${n}"]`);
+  const num=n=>{ const v=parseFloat(inp(n)?.value); return isNaN(v)?null:v; };
+  const clearOut=msg=>{ g('side').textContent=msg; g('pill').className='pill pass'; g('pill').textContent='—';
+    ['medge','sedge','mkt','winp'].forEach(k=>g(k).textContent='–'); g('note').textContent='';
+    g('stake').textContent='$0'; g('units').textContent='0.0u'; g('ev').textContent='0%'; };
+  if(!hr||!ar){ clearOut('no rating for one team'); return; }
+  const sd=CFG.marginSD;
 
-  // base projected home margin
+  // ---- model expected home margin ----
   const injH=num('injHome')||0, injA=num('injAway')||0;
   const restH=REST_PTS[inp('restHome')?.value]||0, restA=REST_PTS[inp('restAway')?.value]||0;
-  let M = (hr.power - ar.power) + CFG.homeCourt - injH + injA + (restH - restA);
+  const muModel = (hr.power-ar.power) + CFG.homeCourt - injH + injA + (restH-restA);
+  g('modelLine').textContent = fmtSpread(-muModel);
+  g('projMargin').textContent = muModel>0?`${hr.short} by ${muModel.toFixed(1)}`:`${ar.short} by ${(-muModel).toFixed(1)}`;
 
-  // sharp blend (tempers model overconfidence)
-  const w = clamp((+sharpWEl.value)/100,0,1); // weight ON SHARP
-  const sharpHome = num('sharpHome');
-  let projMargin = M;
-  if(sharpHome!=null){ const sharpMargin=-sharpHome; projMargin = (1-w)*M + w*sharpMargin; }
+  // ---- sharp expected home margin (de-vig the two sharp prices) ----
+  const sharpHome=num('sharpHome');
+  let muSharp=null;
+  if(sharpHome!=null){
+    const sphP=num('sPriceHome') ?? -110, spaP=num('sPriceAway') ?? -110;
+    const ipH=americanToProb(sphP), ipA=americanToProb(spaP);
+    const nvH=ipH/(ipH+ipA);                       // de-vigged sharp prob HOME covers its number
+    muSharp = -sharpHome + sd*invNorm(nvH);         // implied true home margin
+    g('sharpLine').textContent = fmtSpread(-muSharp);
+  } else { g('sharpLine').textContent='—'; }
 
-  const sd=CFG.marginSD;
-  g('modelLine').textContent = fmtSpread(-M);
-  g('projMargin').textContent= (M>0?`${hr.short} by ${M.toFixed(1)}`:`${ar.short} by ${(-M).toFixed(1)}`);
-  g('blendLine').textContent = sharpHome!=null? fmtSpread(-projMargin) : '—';
-
-  // book lines
+  // ---- need an offer line to evaluate ----
   const bookHome=num('bookHome');
-  if(bookHome==null){ // no line yet
-    g('side').textContent='enter a book line'; g('pill').className='pill pass'; g('pill').textContent='—';
-    ['fair','winp','edge','spv'].forEach(k=>g(k).textContent='–');
-    g('stake').textContent='$0'; g('units').textContent='0.0u'; g('ev').textContent='0%';
-    return;
-  }
+  if(bookHome==null){ clearOut('enter an offer line'); return; }
   const bookAway = num('bookAway') ?? -bookHome;
-  const priceHome=num('priceHome') ?? -110, priceAway=num('priceAway') ?? -110;
+  const priceH=num('priceHome') ?? -110, priceA=num('priceAway') ?? -110;
+  const trust=clamp((+trustEl.value)/100,0,1);     // weight on the MODEL
 
-  // cover probs at the book line, using blended margin
-  const lineHomeMustWinBy = -bookHome;              // home covers if margin > this
-  const pHome = 1-normCdf((lineHomeMustWinBy - projMargin)/sd);
-  const pAway = 1-pHome;
+  // evaluate both sides
+  const sides=[
+    {abbr:card.dataset.home, isHome:true,  number:bookHome, price:priceH, sharpNum:sharpHome},
+    {abbr:card.dataset.away, isHome:false, number:bookAway, price:priceA, sharpNum:(sharpHome!=null?-sharpHome:null)}
+  ].map(s=>{
+    const be=americanToProb(s.price);
+    const pModel=coverProb(muModel,s.number,s.isHome,sd);
+    const pSharp=muSharp!=null?coverProb(muSharp,s.number,s.isHome,sd):null;
+    const pBet=pSharp!=null?(trust*pModel+(1-trust)*pSharp):pModel;
+    return {...s, be, pModel, pSharp, pBet,
+      mEdge:pModel-be, sEdge:(pSharp!=null?pSharp-be:null), betEdge:pBet-be,
+      mkt:(s.sharpNum!=null? s.number-s.sharpNum : null)};
+  });
 
-  // no-vig market probs from the two prices
-  const ipH=americanToProb(priceHome), ipA=americanToProb(priceAway);
-  const sum=ipH+ipA; const nvH=ipH/sum, nvA=ipA/sum;
-
-  // choose model's side
-  const homeSide = pHome>=pAway;
-  const p   = homeSide?pHome:pAway;
-  const nv  = homeSide?nvH:nvA;
-  const price = homeSide?priceHome:priceAway;
-  const sideAbbr = homeSide?card.dataset.home:card.dataset.away;
-  const sideSpread = homeSide?bookHome:bookAway;
-  // points of edge: home cushion = projMargin - (number home must win by) = projMargin + bookHome
-  const valueHome = projMargin + bookHome;
-  const valuePts = homeSide ? valueHome : -valueHome;
-
-  const dec=americanToDecimal(price), b=dec-1;
-  const edge = p - nv;                       // probability edge vs no-vig market
-  const ev = p*b - (1-p);                    // per $1
-  let kf=(b*p-(1-p))/b; kf=Math.max(0,kf);   // full Kelly fraction of bankroll
-  const kelly = kf * (+kellyEl.value);
+  // pick the side with the best size-able edge
+  const pick = sides.reduce((a,b)=>b.betEdge>a.betEdge?b:a);
+  const dec=americanToDecimal(pick.price), b=dec-1;
+  const ev=pick.pBet*b-(1-pick.pBet);
+  let kf=Math.max(0,(b*pick.pBet-(1-pick.pBet))/b)*(+kellyEl.value);
   const bankroll=+bankrollEl.value||0;
-  const stake = kelly*bankroll;
-  const unitDollar = bankroll*((+unitEl.value||1)/100);
-  const units = unitDollar>0? stake/unitDollar : 0;
+  const stake=kf*bankroll;
+  const unitDollar=bankroll*((+unitEl.value||1)/100);
+  const units=unitDollar>0?stake/unitDollar:0;
 
-  g('side').textContent = `${sideAbbr} ${fmtSpread(sideSpread)} (${fmtOdds(price)})`;
-  g('fair').textContent = fmtOdds(probToAmerican(p));
-  g('winp').textContent = pct(p);
-  g('edge').textContent = (edge>=0?'+':'')+(edge*100).toFixed(1)+'%';
-  g('edge').className='vv '+(edge>0?'pos':'neg');
-  g('spv').textContent  = (valuePts>=0?'+':'')+valuePts.toFixed(1);
-  g('spv').className='vv '+(valuePts>0?'pos':'neg');
-  g('stake').textContent= '$'+stake.toFixed(0);
-  g('units').textContent= units.toFixed(1)+'u';
-  g('ev').textContent   = (ev>=0?'+':'')+(ev*100).toFixed(1)+'%';
-  g('ev').className = 'muted '+(ev>0?'pos':'neg');
+  g('side').textContent=`${pick.abbr} ${fmtSpread(pick.number)} (${fmtOdds(pick.price)})`;
+  g('medge').textContent=sgnp(pick.mEdge); g('medge').className='vv '+(pick.mEdge>0?'pos':'neg');
+  if(pick.sEdge!=null){ g('sedge').textContent=sgnp(pick.sEdge); g('sedge').className='vv '+(pick.sEdge>0?'pos':'neg'); }
+  else { g('sedge').textContent='—'; g('sedge').className='vv muted'; }
+  g('mkt').textContent = pick.mkt!=null? sgn(pick.mkt) : '—';
+  g('mkt').className='vv '+(pick.mkt>0?'pos':(pick.mkt<0?'neg':'muted'));
+  g('winp').textContent=pct(pick.pBet);
+  g('stake').textContent='$'+stake.toFixed(0);
+  g('units').textContent=units.toFixed(1)+'u';
+  g('ev').textContent=sgnp(ev); g('ev').className='muted '+(ev>0?'pos':'neg');
 
-  // verdict
+  // fair-odds line: model fair vs sharp fair vs the price you get
+  const noteBits=[`Model fair <b>${fmtOdds(probToAmerican(pick.pModel))}</b>`];
+  if(pick.pSharp!=null) noteBits.push(`Sharp fair <b>${fmtOdds(probToAmerican(pick.pSharp))}</b>`);
+  noteBits.push(`you get <b>${fmtOdds(pick.price)}</b>`);
+  g('note').innerHTML=noteBits.join(' · ');
+
+  // verdict keyed off the SIZE-able edge (sharp-validated when sharp present)
   const edgeMin=(+edgeMinEl.value||3)/100;
-  const pill=g('pill');
-  if(edge>=edgeMin && ev>0){ pill.className='pill bet'; pill.textContent='BET'; card.classList.add('rec'); }
-  else if(edge>=edgeMin/2 && ev>0){ pill.className='pill lean'; pill.textContent='LEAN'; card.classList.remove('rec'); }
-  else { pill.className='pill pass'; pill.textContent='PASS'; card.classList.remove('rec'); }
+  const pill=g('pill'); card.classList.remove('rec');
+  const overconf = pick.sEdge!=null && (pick.mEdge-pick.sEdge)>=0.04;
+  if(pick.betEdge>=edgeMin && ev>0){ pill.className='pill bet'; pill.textContent='BET'; card.classList.add('rec'); }
+  else if(pick.betEdge>=edgeMin/2 && ev>0){ pill.className='pill lean'; pill.textContent='LEAN'; }
+  else { pill.className='pill pass'; pill.textContent='PASS'; }
+  if(overconf && pick.betEdge>0) g('note').innerHTML += ` &nbsp;<span class="warnflag">⚠ model hot vs sharp</span>`;
 }
