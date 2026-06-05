@@ -3,10 +3,10 @@
 A clean, bookmarkable web app that projects WNBA point spreads from fundamental
 team factors, turns the model's implied probability into **fair odds**, and — the
 key part — **validates the model's edge against a sharp book**. You enter your
-best-available line/price and the sharp book's line/price for both sides; the app
-shows your **Model edge** next to the **Sharp edge** (the sharp's de-vigged "true"
-probability vs your price), so a model that claims +10% gets confirmed, corrected
-down to +4%, or rejected as no edge. It then sizes the bet with **fractional
+best-available line/price for both sides plus the sharp book's two prices (at the
+same line); the app shows your **Model edge** next to the **Sharp edge** (the
+sharp's de-vigged "true" probability vs your price), so a model that claims +10%
+gets confirmed, corrected down to +4%, or rejected as no edge. It then sizes the bet with **fractional
 Kelly** (+ flat units) on a model/sharp blend you control.
 
 Live URL (after deploy): `https://89Martin.github.io/wnba-spread-model/?d=YYYY-MM-DD`
@@ -25,7 +25,8 @@ Live URL (after deploy): `https://89Martin.github.io/wnba-spread-model/?d=YYYY-M
 - **Modifiers** per card: **Injury ±** points per team, and **Rest** (auto-detected
   Rested / Normal / 3-in-4 / Back-to-back from the schedule, editable).
 - **You enter** (both sides): your **best-available** spread + price, and the
-  **sharp** book's spread + price. Stored locally per date + game.
+  **sharp** book's two prices (at the same line — its lean comes from the price
+  split, no separate sharp spread needed). Stored locally per date + game.
 - **Outputs per card:**
   - **Model edge** — your model's prob at your price (the optimistic number)
   - **Sharp edge** — the sharp book's *de-vigged* true prob at your price (the honest number / market edge)
@@ -37,8 +38,8 @@ Live URL (after deploy): `https://89Martin.github.io/wnba-spread-model/?d=YYYY-M
 ### The math
 - Projected home margin `M = power_home − power_away + HCA − injHome + injAway + (restHome − restAway)`
 - **Sharp true line:** de-vig the two sharp prices → no-vig prob `nvH`; implied true
-  home margin `μ_sharp = −sharpHome + σ·Φ⁻¹(nvH)` (so the price juice, not just the
-  number, shifts the line)
+  home margin `μ_sharp = −offerHome + σ·Φ⁻¹(nvH)`, anchored to your offer line (a
+  symmetric −110/−110 sharp means it agrees with your number; price juice shifts it)
 - Cover probability at *your* offer line uses a normal model with **σ = 12.6** (backtest)
 - **Model edge** = model cover prob − your price's breakeven; **Sharp edge** = sharp cover prob − breakeven
 - **Staking prob** = `trust·model + (1−trust)·sharp`, where **trust** is the *Model trust*
@@ -89,7 +90,7 @@ threshold is what counts. **Recommended default edge threshold: 3%.** Tune the
 1. Open your bookmarked URL. Pick the date.
 2. For each game, type your **best-available** spread + price for both sides
    (the ESPN line is pre-filled as a starting point) and the **sharp** book's
-   spread + price for both sides (e.g. Pinnacle/Circa). Both-side sharp prices
+   price for both sides (e.g. Pinnacle/Circa) at that line. Both-side sharp prices
    let the app de-vig to the sharp's true line.
 3. Set injury points and confirm the auto rest state.
 4. Read the verdict. **BET** = sharp-validated edge ≥ your threshold with positive

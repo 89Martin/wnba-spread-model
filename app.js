@@ -197,11 +197,6 @@ function renderCard(ev,iso,restMap){
         <input data-i="priceHome" inputmode="numeric" placeholder="-110" value="${saved.priceHome ?? -110}">
       </div>
       <div class="row sharp">
-        <span class="rl">Sharp spr</span>
-        <input data-i="sharpAway" inputmode="decimal" placeholder="opt." value="${saved.sharpAway ?? ''}">
-        <input data-i="sharpHome" inputmode="decimal" placeholder="opt." value="${saved.sharpHome ?? ''}">
-      </div>
-      <div class="row sharp">
         <span class="rl">Sharp price</span>
         <input data-i="sPriceAway" inputmode="numeric" placeholder="-110" value="${saved.sPriceAway ?? ''}">
         <input data-i="sPriceHome" inputmode="numeric" placeholder="-110" value="${saved.sPriceHome ?? ''}">
@@ -256,7 +251,6 @@ function mirrorSpreads(card,el){
   const k=el.dataset.i, v=parseFloat(el.value); if(isNaN(v)) return;
   const set=(name,val)=>{ const t=card.querySelector(`[data-i="${name}"]`); if(t&&document.activeElement!==t) t.value=(val>0?`+${val}`:`${val}`); };
   if(k==='bookHome') set('bookAway',-v);  if(k==='bookAway') set('bookHome',-v);
-  if(k==='sharpHome') set('sharpAway',-v); if(k==='sharpAway') set('sharpHome',-v);
 }
 function persistCard(card){ const o={}; card.querySelectorAll('[data-i]').forEach(el=>o[el.dataset.i]=el.value); LS.set(`wnba_odds_${card.dataset.iso}_${card.dataset.gid}`,o); }
 
@@ -284,36 +278,35 @@ function compute(card){
   g('modelLine').textContent = fmtSpread(-muModel);
   g('projMargin').textContent = muModel>0?`${hr.short} by ${muModel.toFixed(1)}`:`${ar.short} by ${(-muModel).toFixed(1)}`;
 
-  // ---- sharp expected home margin (de-vig the two sharp prices) ----
-  const sharpHome=num('sharpHome');
-  let muSharp=null;
-  if(sharpHome!=null){
-    const sphP=num('sPriceHome') ?? -110, spaP=num('sPriceAway') ?? -110;
-    const ipH=americanToProb(sphP), ipA=americanToProb(spaP);
-    const nvH=ipH/(ipH+ipA);                       // de-vigged sharp prob HOME covers its number
-    muSharp = -sharpHome + sd*invNorm(nvH);         // implied true home margin
-    g('sharpLine').textContent = fmtSpread(-muSharp);
-  } else { g('sharpLine').textContent='—'; }
-
   // ---- need an offer line to evaluate ----
   const bookHome=num('bookHome');
-  if(bookHome==null){ clearOut('enter an offer line'); return; }
+  if(bookHome==null){ clearOut('enter an offer line'); g('sharpLine').textContent='—'; return; }
   const bookAway = num('bookAway') ?? -bookHome;
   const priceH=num('priceHome') ?? -110, priceA=num('priceAway') ?? -110;
   const trust=clamp((+trustEl.value)/100,0,1);     // weight on the MODEL
 
+  // ---- sharp true line: de-vig the two sharp prices AT your offer line ----
+  const sPriceH=num('sPriceHome'), sPriceA=num('sPriceAway');
+  let muSharp=null;
+  if(sPriceH!=null && sPriceA!=null){
+    const ipH=americanToProb(sPriceH), ipA=americanToProb(sPriceA);
+    const nvH=ipH/(ipH+ipA);                       // de-vigged sharp prob HOME covers the offer line
+    muSharp = -bookHome + sd*invNorm(nvH);          // implied true home margin
+    g('sharpLine').textContent = fmtSpread(-muSharp);
+  } else { g('sharpLine').textContent='—'; }
+
   // evaluate both sides
   const sides=[
-    {abbr:card.dataset.home, isHome:true,  number:bookHome, price:priceH, sharpNum:sharpHome},
-    {abbr:card.dataset.away, isHome:false, number:bookAway, price:priceA, sharpNum:(sharpHome!=null?-sharpHome:null)}
+    {abbr:card.dataset.home, isHome:true,  number:bookHome, price:priceH},
+    {abbr:card.dataset.away, isHome:false, number:bookAway, price:priceA}
   ].map(s=>{
     const be=americanToProb(s.price);
     const pModel=coverProb(muModel,s.number,s.isHome,sd);
     const pSharp=muSharp!=null?coverProb(muSharp,s.number,s.isHome,sd):null;
     const pBet=pSharp!=null?(trust*pModel+(1-trust)*pSharp):pModel;
+    const mkt=muSharp!=null?(s.isHome? s.number+muSharp : s.number-muSharp):null;
     return {...s, be, pModel, pSharp, pBet,
-      mEdge:pModel-be, sEdge:(pSharp!=null?pSharp-be:null), betEdge:pBet-be,
-      mkt:(s.sharpNum!=null? s.number-s.sharpNum : null)};
+      mEdge:pModel-be, sEdge:(pSharp!=null?pSharp-be:null), betEdge:pBet-be, mkt};
   });
 
   // pick the side with the best size-able edge
